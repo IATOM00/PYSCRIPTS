@@ -460,7 +460,7 @@ def center_window(window) -> None:
         screen_width = window.winfo_screenwidth()
         screen_height = window.winfo_screenheight()
         x = max(0, (screen_width - width) // 2)
-        y = max(0, (screen_height - height) // 3)
+        y = max(0, (screen_height - height) // 2)
         window.geometry(f"{width}x{height}+{x}+{y}")
     except Exception:
         pass
@@ -852,6 +852,7 @@ def run_gui() -> int:
     app = BeatPassApp(root)
     install_frozen_executable_icon(root)
     root.update_idletasks()
+    center_window(root)
     root.deiconify()
     root.lift()
     try:
