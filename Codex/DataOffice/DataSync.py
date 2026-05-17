@@ -670,7 +670,7 @@ def build_snapshot(root: Path) -> Dict[str, PathInfo]:
             rel_for_skip = path.relative_to(root)
         except ValueError:
             rel_for_skip = path
-        if any(is_skipped_sync_dir_name(part) for part in rel_for_skip.parts):
+        if has_skipped_sync_parent_dir(rel_for_skip):
             logging.info("Пропущено службовий об'єкт синхронізації: %s", path)
             continue
         try:
@@ -686,6 +686,9 @@ def build_snapshot(root: Path) -> Dict[str, PathInfo]:
 
             stat_result = path.stat()
             rel = path.relative_to(root)
+            if kind == "dir" and is_skipped_sync_dir_name(rel.name):
+                logging.info("РџСЂРѕРїСѓС‰РµРЅРѕ СЃР»СѓР¶Р±РѕРІСѓ РїР°РїРєСѓ СЃРёРЅС…СЂРѕРЅС–Р·Р°С†С–С—: %s", path)
+                continue
         except OSError as exc:
             logging.warning("Не вдалося прочитати '%s': %s", path, exc)
             continue
@@ -721,12 +724,15 @@ def choose_newer_side(source: PathInfo, target: PathInfo) -> str:
 
 def inspect_relative_path(root: Path, rel: Path) -> Optional[PathInfo]:
     path = root / rel
-    if any(is_skipped_sync_dir_name(part) for part in rel.parts):
+    if has_skipped_sync_parent_dir(rel):
         logging.info("Пропущено службовий об'єкт синхронізації: %s", path)
         return None
     try:
         stat_result = path.stat()
         if path.is_dir() and not path.is_symlink():
+            if is_skipped_sync_dir_name(path.name):
+                logging.info("РџСЂРѕРїСѓС‰РµРЅРѕ СЃР»СѓР¶Р±РѕРІСѓ РїР°РїРєСѓ СЃРёРЅС…СЂРѕРЅС–Р·Р°С†С–С—: %s", path)
+                return None
             kind = "dir"
             size = 0
         elif path.is_file():
@@ -795,7 +801,11 @@ def build_action_log_entry(action: SyncAction) -> str:
 
 
 def is_skipped_sync_dir_name(name: str) -> bool:
-    return name.casefold() in SKIPPED_SYNC_DIRS
+    return name.startswith(".") or name.casefold() in SKIPPED_SYNC_DIRS
+
+
+def has_skipped_sync_parent_dir(rel: Path) -> bool:
+    return any(is_skipped_sync_dir_name(part) for part in rel.parts[:-1])
 
 
 def is_skippable_sync_error(action: SyncAction, exc: BaseException) -> bool:
