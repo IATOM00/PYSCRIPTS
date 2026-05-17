@@ -744,7 +744,7 @@ def ask_folder_settings_window(
     }
     dialog.withdraw()
     install_frozen_executable_icon(dialog)
-    dialog.title(f"НАЛАШТУВАННЯ: FDataOCR")
+    dialog.title(f"НАЛАШТУВАННЯ: DataOrder")
     dialog.attributes("-topmost", True)
     dialog.resizable(False, False)
 
@@ -968,7 +968,7 @@ class ProgressWindow:
         self.dialog = tk.Toplevel(owner)
         self.dialog.withdraw()
         install_frozen_executable_icon(self.dialog)
-        self.dialog.title("FDataOCR - Обробка")
+        self.dialog.title("DataOrder - Обробка")
         self.dialog.resizable(False, False)
         self.dialog.attributes("-topmost", True)
         self.cancel_requested = False
@@ -985,7 +985,7 @@ class ProgressWindow:
         header.grid_columnconfigure(0, weight=1)
         tk.Label(
             header,
-            text="FDataOCR",
+            text="DataOrder",
             bg=colors["header"],
             fg="#FFFFFF",
             font=("Segoe UI Semibold", 15),
@@ -1236,7 +1236,7 @@ class TrashStager:
         if self.root is not None:
             return self.root
 
-        base = Path(tempfile.gettempdir()) / f"FDataOCR - deleted files - {self.timestamp}"
+        base = Path(tempfile.gettempdir()) / f"DataOrder - deleted files - {self.timestamp}"
         self.root = self._unique_path(base)
         self.root.mkdir(parents=True, exist_ok=False)
         return self.root
@@ -2453,7 +2453,7 @@ def main():
 
     selection = ask_folder_settings_window(
         root,
-        app_name="FDataOCR",
+        app_name="DataOrder",
         subtitle="Підготовка обробки файлів у вибраній директорії...",
         hint="Вкажіть папку та оберіть потрібні етапи обробки.",
         browse_title="Обери папку для обробки",

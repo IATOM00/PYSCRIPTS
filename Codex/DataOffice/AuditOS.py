@@ -1717,7 +1717,7 @@ def run_gui() -> Optional[Tuple[Path, Path, bool]]:
     root = tk.Tk()
     root.withdraw()
     install_frozen_executable_icon(root)
-    root.title("НАЛАШТУВАННЯ - SyncOS")
+    root.title("НАЛАШТУВАННЯ: AuditOS")
     root.attributes("-topmost", True)
     root.resizable(False, False)
     root.protocol("WM_DELETE_WINDOW", on_cancel)

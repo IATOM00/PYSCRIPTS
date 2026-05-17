@@ -137,7 +137,7 @@ except ImportError:
     ttk = None
 
 
-APP_NAME = "FDataSync"
+APP_NAME = "DataSync"
 MODE_ONE_WAY = "one_way"
 MODE_TWO_WAY = "two_way"
 MODE_LABELS = {
@@ -246,7 +246,7 @@ class TrashStager:
         if send2trash is None:
             raise RuntimeError(
                 "Для обов'язкового відправлення log-файлу у кошик потрібен пакет send2trash. "
-                "Встановіть його перед запуском FDataSync."
+                "Встановіть його перед запуском DataSync."
             )
         self.enabled = enabled
         self.timestamp = timestamp
@@ -532,9 +532,9 @@ def powershell_folder_snapshot(root: Path, max_depth: int, max_dirs: int) -> Opt
     script = r"""
 $ErrorActionPreference = "SilentlyContinue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$rootPath = $env:FDATASYNC_AUTODETECT_ROOT
-$maxDepth = [int]$env:FDATASYNC_AUTODETECT_MAX_DEPTH
-$maxDirs = [int]$env:FDATASYNC_AUTODETECT_MAX_DIRS
+$rootPath = $env:DataSync_AUTODETECT_ROOT
+$maxDepth = [int]$env:DataSync_AUTODETECT_MAX_DEPTH
+$maxDirs = [int]$env:DataSync_AUTODETECT_MAX_DIRS
 $skip = @{}
 foreach ($skipName in @(__SKIP_NAMES__)) {
     $skip[$skipName.ToLowerInvariant()] = $true
@@ -567,9 +567,9 @@ while ($queue.Count -gt 0 -and $emitted -lt $maxDirs) {
         script,
     ]
     env = os.environ.copy()
-    env["FDATASYNC_AUTODETECT_ROOT"] = str(root)
-    env["FDATASYNC_AUTODETECT_MAX_DEPTH"] = str(max_depth)
-    env["FDATASYNC_AUTODETECT_MAX_DIRS"] = str(max_dirs)
+    env["DataSync_AUTODETECT_ROOT"] = str(root)
+    env["DataSync_AUTODETECT_MAX_DEPTH"] = str(max_depth)
+    env["DataSync_AUTODETECT_MAX_DIRS"] = str(max_dirs)
     try:
         completed = subprocess.run(
             command,
@@ -1663,7 +1663,7 @@ def temporary_copy_path(destination: Path) -> Path:
     parent = destination.parent
     stem = destination.name
     for idx in range(1000):
-        suffix = f".fdatasync_tmp_{os.getpid()}_{idx}"
+        suffix = f".DataSync_tmp_{os.getpid()}_{idx}"
         candidate = parent / f"{stem}{suffix}"
         if not candidate.exists():
             return candidate
@@ -2004,7 +2004,7 @@ class ProgressWindow:
         self.dialog = tk.Toplevel(owner)
         self.dialog.withdraw()
         install_frozen_executable_icon(self.dialog)
-        self.dialog.title(f"СИНХРОНІЗАЦІЯ: FDataSync")
+        self.dialog.title(f"СИНХРОНІЗАЦІЯ: DataSync")
         self.dialog.resizable(False, False)
         self.dialog.attributes("-topmost", True)
         self.dialog.protocol("WM_DELETE_WINDOW", self.request_close)
@@ -2928,7 +2928,7 @@ def run_gui() -> Optional[Tuple[Path, Path, str, bool]]:
     root = tk.Tk()
     root.withdraw()
     install_frozen_executable_icon(root)
-    root.title(f"НАЛАШТУВАННЯ: FDataSync")
+    root.title(f"НАЛАШТУВАННЯ: DataSync")
     root.attributes("-topmost", True)
     root.resizable(False, False)
     root.protocol("WM_DELETE_WINDOW", on_cancel)

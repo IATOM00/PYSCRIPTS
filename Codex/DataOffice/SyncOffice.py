@@ -1264,7 +1264,7 @@ class ProgressWindow:
         self.dialog = tk.Toplevel(owner)
         self.dialog.withdraw()
         install_frozen_executable_icon(self.dialog)
-        self.dialog.title("SyncEW - Обробка")
+        self.dialog.title("SyncOffice - Обробка")
         self.dialog.resizable(False, False)
         self.dialog.attributes("-topmost", True)
         self.dialog.protocol("WM_DELETE_WINDOW", self.request_close)
@@ -1280,7 +1280,7 @@ class ProgressWindow:
         header.grid_columnconfigure(0, weight=1)
         tk.Label(
             header,
-            text="SyncEW",
+            text="SyncOffice",
             bg=colors["header"],
             fg="#FFFFFF",
             font=("Segoe UI Semibold", 15),
@@ -1763,7 +1763,7 @@ def run_gui() -> Optional[Tuple[Path, Path, bool, Optional[str], Optional[str]]]
     root = tk.Tk()
     root.withdraw()
     install_frozen_executable_icon(root)
-    root.title("SyncEW - НАЛАШТУВАННЯ:")
+    root.title("НАЛАШТУВАННЯ: SyncOffice")
     root.attributes("-topmost", True)
     root.resizable(False, False)
     root.protocol("WM_DELETE_WINDOW", on_cancel)
@@ -1990,7 +1990,7 @@ def run_gui() -> Optional[Tuple[Path, Path, bool, Optional[str], Optional[str]]]
     header.grid_columnconfigure(0, weight=1)
     tk.Label(
         header,
-        text="SyncEW",
+        text="SyncOffice",
         bg=colors["header"],
         fg="#FFFFFF",
         font=("Segoe UI Semibold", 16),

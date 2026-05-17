@@ -1610,7 +1610,7 @@ class ProgressWindow:
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("НАЛАШТУВАННЯ - ECOmpare")
+        self.root.title("ПАРАМЕТРИ: ECOmpare")
         self.root.resizable(False, False)
         self.root.attributes("-topmost", True)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1808,7 +1808,7 @@ class App:
         badge_shell = tk.Frame(header, bg=colors["accent_dark"], padx=1, pady=1)
         badge = tk.Label(
             badge_shell,
-            text="НАЛАШТУВАННЯ",
+            text="ПАРАМЕТРИ",
             bg="#053D39",
             fg="#FFFFFF",
             font=("Segoe UI", 11, "bold"),

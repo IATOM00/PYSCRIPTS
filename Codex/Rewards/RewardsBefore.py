@@ -931,7 +931,7 @@ def ask_all_inputs_window() -> tuple[Path | None, Path | None, Path, int, int, i
     root = Tk()
     root.withdraw()
     install_frozen_executable_icon(root)
-    root.title("ПАРАМЕТРИ - RewardsBefore")
+    root.title("НАЛАШТУВАННЯ: RewardsBefore")
     root.attributes("-topmost", True)
     root.resizable(False, False)
     colors = configure_launch_styles(root)

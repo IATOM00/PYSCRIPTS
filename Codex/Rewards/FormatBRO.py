@@ -437,7 +437,7 @@ def ask_folder_settings_window(
     selected = {"path": None}
     dialog.withdraw()
     install_frozen_executable_icon(dialog)
-    dialog.title(f"НАЛАШТУВАННЯ - FormatBRO:")
+    dialog.title(f"НАЛАШТУВАННЯ: FormatBRO")
     dialog.attributes("-topmost", True)
     dialog.resizable(False, False)
 
