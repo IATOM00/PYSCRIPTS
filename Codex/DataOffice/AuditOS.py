@@ -216,6 +216,70 @@ try:
 except ImportError:
     pythoncom = None
 
+
+class FileAccessError(Exception):
+    title = "Файл зайнятий"
+
+
+_FILE_ACCESS_WINERRORS = {5, 32, 33}
+
+
+def _is_file_access_error(exc: BaseException) -> bool:
+    if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in _FILE_ACCESS_WINERRORS:
+        return True
+    text = str(exc).casefold()
+    return any(
+        marker in text
+        for marker in (
+            "permission denied",
+            "access is denied",
+            "used by another process",
+            "file is in use",
+            "locked for editing",
+            "файл використовується",
+            "файл зайнятий",
+        )
+    )
+
+
+def _permission_error_path(exc: BaseException, fallback: Path | None = None) -> Path | None:
+    for attr in ("filename2", "filename"):
+        value = getattr(exc, attr, None)
+        if value:
+            try:
+                return Path(value)
+            except Exception:
+                pass
+    return Path(fallback) if fallback is not None else None
+
+
+def _file_access_message(path: Path | None, action: str, exc: BaseException | None = None) -> str:
+    path_text = str(path) if path else "невідомий файл"
+    return (
+        f"Не вдалося {action}.\n\n"
+        f"Файл:\n{path_text}\n\n"
+        "Причина: файл використовується іншим процесом.\n"
+        "Закрийте цей файл, чи процес що його використовує..."
+    )
+
+
+def _raise_file_access_error(exc: BaseException, fallback: Path | None, action: str) -> None:
+    path = _permission_error_path(exc, fallback)
+    raise FileAccessError(_file_access_message(path, action, exc)) from exc
+
+
+def ensure_file_available_for_write(path: Path, action: str = "записати файл") -> None:
+    path = Path(path)
+    if not path.exists():
+        return
+    try:
+        with path.open("r+b"):
+            pass
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, path, action)
+        raise
+
 # ============================================================
 # МОДЕЛІ ДАНИХ
 # ============================================================
@@ -380,7 +444,12 @@ def first_paragraph_text(value: object) -> str:
 
 
 def load_staff_records(xlsx_path: Path) -> Dict[str, StaffRecord]:
-    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    try:
+        wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, xlsx_path, "відкрити Excel-файл")
+        raise
     if SHEET_NAME not in wb.sheetnames:
         raise ValueError(f"У файлі немає аркуша '{SHEET_NAME}'")
 
@@ -689,7 +758,13 @@ def process_docx_file(
 
     report.regular = sorted(seen_regular.values(), key=lambda x: normalize_name(x.full_name))
     if update_data and has_changes:
-        document.save(docx_path)
+        ensure_file_available_for_write(docx_path, "зберегти DOCX-файл")
+        try:
+            document.save(docx_path)
+        except OSError as exc:
+            if _is_file_access_error(exc):
+                _raise_file_access_error(exc, docx_path, "зберегти DOCX-файл")
+            raise
         report.was_changed = True
     elif update_data:
         logging.info("DOCX без змін, файл не перезаписано: %s", docx_path)
@@ -709,11 +784,16 @@ def is_exact_header_match(cell_value: object, aliases: Iterable[str]) -> Optiona
 
 def load_target_workbook(workbook_path: Path, update_data: bool):
     is_macro_book = workbook_path.suffix.lower() == ".xlsm"
-    return openpyxl.load_workbook(
-        workbook_path,
-        data_only=True,
-        keep_vba=is_macro_book,
-    )
+    try:
+        return openpyxl.load_workbook(
+            workbook_path,
+            data_only=True,
+            keep_vba=is_macro_book,
+        )
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, workbook_path, "відкрити Excel-файл")
+        raise
 
 
 def find_excel_header_matches(worksheet) -> List[ExcelHeaderMatch]:
@@ -788,6 +868,7 @@ def apply_excel_updates_via_com(
     workbook = None
 
     try:
+        ensure_file_available_for_write(workbook_path, "оновити Excel-файл")
         excel = win32.DispatchEx("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
@@ -796,7 +877,12 @@ def apply_excel_updates_via_com(
         except Exception:
             pass
 
-        workbook = excel.Workbooks.Open(str(workbook_path), UpdateLinks=0, ReadOnly=False)
+        try:
+            workbook = excel.Workbooks.Open(str(workbook_path), UpdateLinks=0, ReadOnly=False)
+        except Exception as exc:
+            if _is_file_access_error(exc):
+                _raise_file_access_error(exc, workbook_path, "відкрити Excel-файл для запису")
+            raise
         worksheet = workbook.Worksheets(1)
         has_changes = False
 
@@ -826,7 +912,12 @@ def apply_excel_updates_via_com(
                 has_changes = True
 
         if has_changes:
-            workbook.Save()
+            try:
+                workbook.Save()
+            except Exception as exc:
+                if _is_file_access_error(exc):
+                    _raise_file_access_error(exc, workbook_path, "зберегти Excel-файл")
+                raise
         return has_changes
     finally:
         if workbook is not None:
@@ -955,7 +1046,12 @@ def create_folder_backup_in_trash(
             total=1,
             file_name=folder.name,
         )
-    shutil.copytree(folder, backup_path)
+    try:
+        shutil.copytree(folder, backup_path)
+    except Exception as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, folder, "зробити backup папки")
+        raise
     send2trash(str(backup_path))
     if progress:
         progress.update(
@@ -1070,7 +1166,13 @@ def write_report(
 ) -> Path:
     report_path = root_folder / build_report_filename(timestamp)
     report_text = build_report_text(file_reports, timestamp, staff_file_name, work_folder)
-    report_path.write_text(report_text, encoding="utf-8")
+    ensure_file_available_for_write(report_path, "записати звіт")
+    try:
+        report_path.write_text(report_text, encoding="utf-8")
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, report_path, "записати звіт")
+        raise
     return report_path
 
 
@@ -1965,6 +2067,8 @@ def process_all(
         try:
             report = process_target_file(target_file, staff_map, update_data=update_data)
             file_reports.append(report)
+        except FileAccessError:
+            raise
         except Exception as exc:
             logging.exception("Помилка при обробці '%s': %s", target_file.name, exc)
         if progress:
@@ -2028,7 +2132,7 @@ def main() -> None:
             message_parent = ui_root
             if progress is not None and _widget_exists(progress.dialog):
                 message_parent = progress.dialog
-            _show_topmost_message("error", "Помилка", str(exc), parent=message_parent)
+            _show_topmost_message("error", getattr(exc, "title", "Помилка"), str(exc), parent=message_parent)
         except Exception:
             print(f"Помилка: {exc}")
     finally:

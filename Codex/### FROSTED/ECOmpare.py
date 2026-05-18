@@ -11,6 +11,82 @@ from pathlib import Path
 import tkinter as tk
 
 
+class FileAccessError(Exception):
+    title = "Файл зайнятий"
+
+
+_FILE_ACCESS_WINERRORS = {5, 32, 33}
+
+
+def _is_file_access_error(exc: BaseException) -> bool:
+    if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in _FILE_ACCESS_WINERRORS:
+        return True
+    text = str(exc).casefold()
+    return any(
+        marker in text
+        for marker in (
+            "permission denied",
+            "access is denied",
+            "used by another process",
+            "file is in use",
+            "locked for editing",
+            "файл використовується",
+            "файл зайнятий",
+        )
+    )
+
+
+def _permission_error_path(exc: BaseException, fallback: Path | None = None) -> Path | None:
+    for attr in ("filename2", "filename"):
+        value = getattr(exc, attr, None)
+        if value:
+            try:
+                return Path(value)
+            except Exception:
+                pass
+    return Path(fallback) if fallback is not None else None
+
+
+def _file_access_message(path: Path | None, action: str, exc: BaseException | None = None) -> str:
+    path_text = str(path) if path else "невідомий файл"
+    return (
+        f"Не вдалося {action}.\n\n"
+        f"Файл:\n{path_text}\n\n"
+        "Причина: файл використовується іншим процесом.\n"
+        "Закрийте цей файл, чи процес що його використовує..."
+    )
+
+
+def _raise_file_access_error(exc: BaseException, fallback: Path | None, action: str) -> None:
+    path = _permission_error_path(exc, fallback)
+    raise FileAccessError(_file_access_message(path, action, exc)) from exc
+
+
+def ensure_file_available_for_write(path: Path, action: str = "записати файл") -> None:
+    path = Path(path)
+    if not path.exists():
+        return
+    try:
+        with path.open("r+b"):
+            pass
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, path, action)
+        raise
+
+
+def write_text_file_with_access_check(path: str | Path, text: str, encoding: str = "utf-8-sig") -> None:
+    output_path = Path(path)
+    ensure_file_available_for_write(output_path, "записати файл звіту")
+    try:
+        with output_path.open("w", encoding=encoding) as f:
+            f.write(text)
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, output_path, "записати файл звіту")
+        raise
+
+
 def install_frozen_executable_icon(root, retry_ms: int = 250) -> None:
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return
@@ -373,12 +449,22 @@ def load_workbook_generic(file_path: str) -> LoadedWorkbook:
         from openpyxl import load_workbook
         # data_only=True -> беремо значення формул, якщо вони закешовані
         # keep_vba=True  -> для xlsm не ламаємо файл при відкритті
-        wb = load_workbook(file_path, data_only=True, keep_vba=(ext == ".xlsm"))
+        try:
+            wb = load_workbook(file_path, data_only=True, keep_vba=(ext == ".xlsm"))
+        except OSError as exc:
+            if _is_file_access_error(exc):
+                _raise_file_access_error(exc, Path(file_path), "відкрити Excel-файл")
+            raise
         return LoadedWorkbook(file_path=file_path, engine="openpyxl", workbook=wb)
 
     elif ext == ".xls":
         import xlrd
-        wb = xlrd.open_workbook(file_path)
+        try:
+            wb = xlrd.open_workbook(file_path)
+        except OSError as exc:
+            if _is_file_access_error(exc):
+                _raise_file_access_error(exc, Path(file_path), "відкрити Excel-файл")
+            raise
         return LoadedWorkbook(file_path=file_path, engine="xlrd", workbook=wb)
 
     else:
@@ -977,6 +1063,7 @@ def annotate_mismatched_rows_in_workbook(
 
     workbook = None
     try:
+        ensure_file_available_for_write(Path(file_path), "зберегти позначки в Excel-файлі")
         workbook = load_workbook(
             file_path,
             data_only=False,
@@ -1001,12 +1088,14 @@ def annotate_mismatched_rows_in_workbook(
                 "ECOmpare",
             )
 
-        workbook.save(file_path)
-    except PermissionError as exc:
-        raise ValueError(
-            f"Не вдалося зберегти позначки у {source_caption}. "
-            f"Можливо, книга відкрита в Excel. {exc}"
-        ) from exc
+        try:
+            workbook.save(file_path)
+        except OSError as exc:
+            if _is_file_access_error(exc):
+                _raise_file_access_error(exc, Path(file_path), "зберегти позначки в Excel-файлі")
+            raise
+    except FileAccessError:
+        raise
     except KeyError as exc:
         raise ValueError(
             f"Не знайдено аркуш {quote_log_value(sheet_name)} у {source_caption} під час запису позначок."
@@ -1174,37 +1263,37 @@ def save_reports_near_file2(
     out_path2 = os.path.join(out_dir, "Серійники №2.log")
     out_path3 = os.path.join(out_dir, "Серійники №3.log")
 
-    with open(out_path0, "w", encoding="utf-8-sig") as f:
-        f.write(
-            build_duplicate_report_text(
-                f"--- ДУБЛІКАТИ СЕРІЙНИКІВ у {source1} та у {source2}:",
-                duplicate_serials,
-            )
+    write_text_file_with_access_check(
+        out_path0,
+        build_duplicate_report_text(
+            f"--- ДУБЛІКАТИ СЕРІЙНИКІВ у {source1} та у {source2}:",
+            duplicate_serials,
         )
+    )
 
-    with open(out_path1, "w", encoding="utf-8-sig") as f:
-        f.write(
-            build_serials_file_text(
-                f"--- СЕРІЙНИКИ, що існують у {source1}, але немає у {source2}:",
-                only_in_file1,
-            )
+    write_text_file_with_access_check(
+        out_path1,
+        build_serials_file_text(
+            f"--- СЕРІЙНИКИ, що існують у {source1}, але немає у {source2}:",
+            only_in_file1,
         )
+    )
 
-    with open(out_path2, "w", encoding="utf-8-sig") as f:
-        f.write(
-            build_serials_file_text(
-                f"--- СЕРІЙНИКИ, що існують у {source2}, але немає у {source1}:",
-                only_in_file2,
-            )
+    write_text_file_with_access_check(
+        out_path2,
+        build_serials_file_text(
+            f"--- СЕРІЙНИКИ, що існують у {source2}, але немає у {source1}:",
+            only_in_file2,
         )
+    )
 
-    with open(out_path3, "w", encoding="utf-8-sig") as f:
-        f.write(
-            build_serials_file_text(
-                f"--- СЕРІЙНИКИ, що існують і у {source1}, і у {source2}:",
-                in_both,
-            )
+    write_text_file_with_access_check(
+        out_path3,
+        build_serials_file_text(
+            f"--- СЕРІЙНИКИ, що існують і у {source1}, і у {source2}:",
+            in_both,
         )
+    )
 
     return out_path0, out_path1, out_path2, out_path3
 
@@ -1228,21 +1317,21 @@ def save_price_reports_near_file2(
     out_path4 = os.path.join(out_dir, "Серійники №4.log")
     out_path5 = os.path.join(out_dir, "Серійники №5.log")
 
-    with open(out_path4, "w", encoding="utf-8-sig") as f:
-        f.write(
-            build_price_report_text(
-                f"--- СЕРІЙНИКИ, де ціни збігаються у {source1} та у {source2}:",
-                matched,
-            )
+    write_text_file_with_access_check(
+        out_path4,
+        build_price_report_text(
+            f"--- СЕРІЙНИКИ, де ціни збігаються у {source1} та у {source2}:",
+            matched,
         )
+    )
 
-    with open(out_path5, "w", encoding="utf-8-sig") as f:
-        f.write(
-            build_price_report_text(
-                f"--- СЕРІЙНИКИ, де ціни НЕ збігаються у {source1} та у {source2}:",
-                mismatched,
-            )
+    write_text_file_with_access_check(
+        out_path5,
+        build_price_report_text(
+            f"--- СЕРІЙНИКИ, де ціни НЕ збігаються у {source1} та у {source2}:",
+            mismatched,
         )
+    )
 
     return out_path4, out_path5
 
@@ -2369,7 +2458,7 @@ class App:
             ):
                 self._finish_stage(stage_key, stage_message, outcome="перервано після")
             self._append_process_log(f"ERROR: {e}")
-            self.compare_queue.put(("error", str(e)))
+            self.compare_queue.put(("error", getattr(e, "title", "Помилка"), str(e)))
 
     def _poll_compare_queue(self):
         if not widget_exists(self.root):
@@ -2477,10 +2566,14 @@ class App:
             destroy_widget(self.root)
             return
 
-        _, error_text = result
+        if len(result) == 3:
+            _, error_title, error_text = result
+        else:
+            _, error_text = result
+            error_title = "Помилка"
         self._append_process_log(f"FAIL: {error_text}")
         self._finish_run_timing()
-        show_topmost_message("error", "Помилка", error_text, parent=error_parent)
+        show_topmost_message("error", error_title, error_text, parent=error_parent)
         if self.progress_window is not None:
             self.progress_window.close()
             self.progress_window = None

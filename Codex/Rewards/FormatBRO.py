@@ -13,6 +13,70 @@ from pathlib import Path
 import tkinter as tk
 
 
+class FileAccessError(Exception):
+    title = "Файл зайнятий"
+
+
+_FILE_ACCESS_WINERRORS = {5, 32, 33}
+
+
+def _is_file_access_error(exc: BaseException) -> bool:
+    if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in _FILE_ACCESS_WINERRORS:
+        return True
+    text = str(exc).casefold()
+    return any(
+        marker in text
+        for marker in (
+            "permission denied",
+            "access is denied",
+            "used by another process",
+            "file is in use",
+            "locked for editing",
+            "файл використовується",
+            "файл зайнятий",
+        )
+    )
+
+
+def _permission_error_path(exc: BaseException, fallback: Path | None = None) -> Path | None:
+    for attr in ("filename2", "filename"):
+        value = getattr(exc, attr, None)
+        if value:
+            try:
+                return Path(value)
+            except Exception:
+                pass
+    return Path(fallback) if fallback is not None else None
+
+
+def _file_access_message(path: Path | None, action: str, exc: BaseException | None = None) -> str:
+    path_text = str(path) if path else "невідомий файл"
+    return (
+        f"Не вдалося {action}.\n\n"
+        f"Файл:\n{path_text}\n\n"
+        "Причина: файл використовується іншим процесом.\n"
+        "Закрийте цей файл, чи процес що його використовує..."
+    )
+
+
+def _raise_file_access_error(exc: BaseException, fallback: Path | None, action: str) -> None:
+    path = _permission_error_path(exc, fallback)
+    raise FileAccessError(_file_access_message(path, action, exc)) from exc
+
+
+def ensure_file_available_for_write(path: Path, action: str = "записати файл") -> None:
+    path = Path(path)
+    if not path.exists():
+        return
+    try:
+        with path.open("r+b"):
+            pass
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, path, action)
+        raise
+
+
 def install_frozen_executable_icon(root, retry_ms: int = 250) -> None:
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return
@@ -742,6 +806,8 @@ def run_format_workflow_with_progress(progress: ProgressWindow) -> None:
 
             try:
                 patch_reports(progress=progress_proxy)
+            except FileAccessError:
+                raise
             except Exception as e:
                 log(f"[PATCH ERROR] Патч документів зламався, але чистка продовжується: {e}")
 
@@ -751,6 +817,8 @@ def run_format_workflow_with_progress(progress: ProgressWindow) -> None:
                     progress=progress_proxy,
                     stage_header="Етап 3.5/4: Перепровіряємо...",
                 )
+            except FileAccessError:
+                raise
             except Exception as e:
                 log(f"[DOC->DOCX ERROR] Конвертація дала збій, продовжую як є: {e}")
 
@@ -1032,10 +1100,17 @@ def make_backup(base_dir: Path, progress: ProgressWindow | None = None) -> Path:
                 dest_path.mkdir(parents=True, exist_ok=True)
             else:
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, dest_path)
+                try:
+                    shutil.copy2(item, dest_path)
+                except OSError as exc:
+                    if _is_file_access_error(exc):
+                        _raise_file_access_error(exc, item, "зробити backup файлу")
+                    raise
             if progress:
                 progress.update(current=idx, total=len(items), file_name=item.name)
 
+    except FileAccessError:
+        raise
     except Exception as e:
         log(f"[BACKUP ERROR] Не вдалось зробити backup: {e}")
 
@@ -1201,7 +1276,14 @@ def process_docx_patch(path: Path):
     apply_times_new_roman_12(doc)
 
     try:
+        ensure_file_available_for_write(path, "зберегти DOCX-файл")
         doc.save(path)
+    except FileAccessError:
+        raise
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, path, "зберегти DOCX-файл")
+        raise
     except Exception as e:
         log(f"[ERROR] Не вдалось зберегти {path}: {e}")
 
@@ -1246,11 +1328,20 @@ def convert_all_docs_to_docx(
 
             new_path = path.with_suffix(".docx")
             try:
+                ensure_file_available_for_write(path, "конвертувати DOC-файл")
+                ensure_file_available_for_write(new_path, "створити DOCX-файл")
                 doc = word.Documents.Open(str(path))
                 doc.SaveAs(str(new_path), FileFormat=16)  # wdFormatXMLDocument
                 doc.Close()
-                path.unlink()
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    if _is_file_access_error(exc):
+                        _raise_file_access_error(exc, path, "видалити старий DOC-файл")
+                    raise
                 log(f"[OK] Конвертовано {path.name} -> {new_path.name} (старий .doc видалено)")
+            except FileAccessError:
+                raise
             except Exception as e:
                 log(f"[ERROR] Конвертація {path}: {e}")
             if progress:
@@ -2266,7 +2357,13 @@ def clean_process_docx_file(path: Path):
     fix_last_daily_signature_line(document, spacer=(" " * 55) + "\t")
     mark_all_text_as_ukrainian(document)
 
-    document.save(path)
+    try:
+        ensure_file_available_for_write(path, "зберегти DOCX-файл")
+        document.save(path)
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, path, "зберегти DOCX-файл")
+        raise
 
 def clean_process_all_docx(root_folder: Path, progress: ProgressWindow | None = None):
     filenames = os.listdir(root_folder)
@@ -2308,6 +2405,8 @@ def clean_process_all_docx(root_folder: Path, progress: ProgressWindow | None = 
         log(f"[CLEAN] {full_path.name}")
         try:
             clean_process_docx_file(full_path)
+        except FileAccessError:
+            raise
         except Exception as e:
             log(f"[CLEAN ERROR] {full_path.name}: {e}")
         if progress:
@@ -2337,53 +2436,75 @@ def ask_all_settings_one_window(parent: tk.Misc | None = None) -> Path:
 def main():
     global BASE_DIR, ROOT_DIR, BACKUP_ROOT
 
-    ui_root = tk.Tk()
-    ui_root.withdraw()
-    install_frozen_executable_icon(ui_root)
-    install_dark_title_bar(ui_root)
-    ui_root.attributes("-topmost", True)
-
-    BASE_DIR = ask_all_settings_one_window(parent=ui_root)
-
-    ROOT_DIR = BASE_DIR
-    script_name = Path(__file__).stem
-    timestamp = datetime.now().strftime("%Y.%m.%d %H.%M")
-    BACKUP_ROOT = BASE_DIR / f"Backup - {script_name} - {timestamp}"
-
-    progress = ProgressWindow(ui_root)
-
+    ui_root = None
+    progress = None
     try:
-        run_format_workflow_with_progress(progress)
-    finally:
-        progress.close()
-
-    log("[START] Об’єднаний скрипт: патч документів -> (опційно) чистка форматування")
-    # Лог у backup
-    log_path = BACKUP_ROOT / "FormatBRO.log"
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(LOG_LINES))
-    except Exception as e:
-        log(f"[ERROR] Не вдалось записати FormatBRO.log: {e}")
-
-    # Переміщення backup у кошик
-    try:
-        if BACKUP_ROOT.exists() and BACKUP_ROOT.is_dir():
-            send2trash(str(BACKUP_ROOT))
-            log(f"[CLEANUP] Папку backup переміщено у кошик: {BACKUP_ROOT}")
-    except Exception as e:
-        log(f"[CLEANUP ERROR] Не вдалося перемістити backup у кошик: {e}")
-
-    # ✅ messagebox поверх усіх вікон
-    try:
+        ui_root = tk.Tk()
+        ui_root.withdraw()
+        install_frozen_executable_icon(ui_root)
+        install_dark_title_bar(ui_root)
         ui_root.attributes("-topmost", True)
-        ui_root.lift()
-        ui_root.update_idletasks()
-        messagebox.showinfo("Готово", "Документи оброблено.", parent=ui_root)
-        ui_root.destroy()
-    except Exception:
-        pass
+
+        BASE_DIR = ask_all_settings_one_window(parent=ui_root)
+
+        ROOT_DIR = BASE_DIR
+        script_name = Path(__file__).stem
+        timestamp = datetime.now().strftime("%Y.%m.%d %H.%M")
+        BACKUP_ROOT = BASE_DIR / f"Backup - {script_name} - {timestamp}"
+
+        progress = ProgressWindow(ui_root)
+        run_format_workflow_with_progress(progress)
+        progress.close()
+        progress = None
+
+        log("[START] Об’єднаний скрипт: патч документів -> (опційно) чистка форматування")
+        # Лог у backup
+        log_path = BACKUP_ROOT / "FormatBRO.log"
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(LOG_LINES))
+        except Exception as e:
+            log(f"[ERROR] Не вдалось записати FormatBRO.log: {e}")
+
+        # Переміщення backup у кошик
+        try:
+            if BACKUP_ROOT.exists() and BACKUP_ROOT.is_dir():
+                send2trash(str(BACKUP_ROOT))
+                log(f"[CLEANUP] Папку backup переміщено у кошик: {BACKUP_ROOT}")
+        except Exception as e:
+            log(f"[CLEANUP ERROR] Не вдалося перемістити backup у кошик: {e}")
+
+        # ✅ messagebox поверх усіх вікон
+        if _widget_exists(ui_root):
+            ui_root.attributes("-topmost", True)
+            ui_root.lift()
+            ui_root.update_idletasks()
+            messagebox.showinfo("Готово", "Документи оброблено.", parent=ui_root)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        title = getattr(exc, "title", "Помилка")
+        try:
+            parent = ui_root if _widget_exists(ui_root) else None
+            if parent is not None:
+                _prepare_dialog_parent(parent)
+                messagebox.showerror(title, str(exc), parent=parent)
+            else:
+                error_root = tk.Tk()
+                error_root.withdraw()
+                install_frozen_executable_icon(error_root)
+                install_dark_title_bar(error_root)
+                error_root.attributes("-topmost", True)
+                messagebox.showerror(title, str(exc), parent=error_root)
+                error_root.destroy()
+        except Exception:
+            print(f"{title}: {exc}")
+    finally:
+        if progress is not None:
+            progress.close()
+        if _widget_exists(ui_root):
+            ui_root.destroy()
 
 if __name__ == "__main__":
     main()

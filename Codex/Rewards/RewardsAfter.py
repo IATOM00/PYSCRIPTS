@@ -4,7 +4,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from collections import defaultdict, deque
 from openpyxl.cell.cell import MergedCell
 from datetime import datetime, date
-from openpyxl import load_workbook
+from openpyxl import load_workbook as _openpyxl_load_workbook
 from send2trash import send2trash
 from zipfile import BadZipFile, ZipFile
 import tkinter.font as tkfont
@@ -14,6 +14,83 @@ import threading
 import queue
 import os
 import sys
+
+
+class FileAccessError(Exception):
+    title = "Файл зайнятий"
+
+
+_FILE_ACCESS_WINERRORS = {5, 32, 33}
+
+
+def _is_file_access_error(exc: BaseException) -> bool:
+    if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in _FILE_ACCESS_WINERRORS:
+        return True
+    text = str(exc).casefold()
+    return any(
+        marker in text
+        for marker in (
+            "permission denied",
+            "access is denied",
+            "used by another process",
+            "file is in use",
+            "locked for editing",
+            "файл використовується",
+            "файл зайнятий",
+        )
+    )
+
+
+def _permission_error_path(exc: BaseException, fallback: Path | None = None) -> Path | None:
+    for attr in ("filename2", "filename"):
+        value = getattr(exc, attr, None)
+        if value:
+            try:
+                return Path(value)
+            except Exception:
+                pass
+    return Path(fallback) if fallback is not None else None
+
+
+def _file_access_message(path: Path | None, action: str, exc: BaseException | None = None) -> str:
+    path_text = str(path) if path else "невідомий файл"
+    return (
+        f"Не вдалося {action}.\n\n"
+        f"Файл:\n{path_text}\n\n"
+        "Причина: файл використовується іншим процесом.\n"
+        "Закрийте цей файл, чи процес що його використовує..."
+    )
+
+
+def _raise_file_access_error(exc: BaseException, fallback: Path | None, action: str) -> None:
+    path = _permission_error_path(exc, fallback)
+    raise FileAccessError(_file_access_message(path, action, exc)) from exc
+
+
+def ensure_file_available_for_write(path: Path, action: str = "записати файл") -> None:
+    path = Path(path)
+    if not path.exists():
+        return
+    try:
+        with path.open("r+b"):
+            pass
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            _raise_file_access_error(exc, path, action)
+        raise
+
+
+def load_workbook(filename, *args, **kwargs):
+    try:
+        return _openpyxl_load_workbook(filename, *args, **kwargs)
+    except OSError as exc:
+        if _is_file_access_error(exc):
+            try:
+                fallback_path = Path(filename)
+            except TypeError:
+                fallback_path = None
+            _raise_file_access_error(exc, fallback_path, "відкрити Excel-файл")
+        raise
 
 
 def install_frozen_executable_icon(root, retry_ms: int = 250) -> None:
@@ -179,17 +256,31 @@ def _assert_valid_xlsx_package(path: Path) -> None:
 def _safe_save_workbook(wb, target_xlsx: Path) -> None:
     target_xlsx = Path(target_xlsx)
     tmp_path = target_xlsx.with_name(f".{target_xlsx.stem}.{os.getpid()}.tmp{target_xlsx.suffix}")
+    ensure_file_available_for_write(target_xlsx, "перезаписати Excel-файл")
 
     try:
         try:
             if tmp_path.exists():
                 tmp_path.unlink()
-        except OSError:
+        except OSError as exc:
+            if _is_file_access_error(exc):
+                _raise_file_access_error(exc, tmp_path, "прибрати старий тимчасовий Excel-файл")
             raise
 
-        wb.save(tmp_path)
+        try:
+            wb.save(tmp_path)
+        except OSError as exc:
+            if _is_file_access_error(exc):
+                _raise_file_access_error(exc, tmp_path, "створити тимчасовий Excel-файл")
+            raise
+
         _assert_valid_xlsx_package(tmp_path)
-        tmp_path.replace(target_xlsx)
+        try:
+            tmp_path.replace(target_xlsx)
+        except OSError as exc:
+            if _is_file_access_error(exc):
+                _raise_file_access_error(exc, target_xlsx, "перезаписати Excel-файл")
+            raise
     except Exception:
         try:
             if tmp_path.exists():
@@ -894,7 +985,7 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int, bool]:
     container.pack(fill="both", expand=True)
     container.grid_columnconfigure(1, weight=1)
 
-    ttk.Label(container, text="Ціль", style="LaunchSection.TLabel").grid(
+    ttk.Label(container, text="ФАЙЛ:", style="LaunchSection.TLabel").grid(
         row=0, column=0, columnspan=3, sticky="w"
     )
 
@@ -920,7 +1011,6 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int, bool]:
     ttk.Label(
         container,
         text=(
-            "Коли увімкнено, виконується перерахунок грошей у колонці AO на аркушах 100 000 та, якщо є, упр.\n"
             "Коли вимкнено, виконується кінцева операція заповнення листів 100 / 70 / 30 / 0."
         ),
         style="LaunchMuted.TLabel",
@@ -988,7 +1078,12 @@ def backup_excel_to_trash(xlsx_path: Path, progress=None, total_stages: int = 5)
                 total=1,
                 file_name=xlsx_path.name,
             )
-        shutil.copy2(xlsx_path, backup_path)
+        try:
+            shutil.copy2(xlsx_path, backup_path)
+        except OSError as exc:
+            if _is_file_access_error(exc):
+                _raise_file_access_error(exc, xlsx_path, "зробити backup Excel-файлу")
+            raise
         send2trash(str(backup_path))
         if progress:
             progress.update(
@@ -998,6 +1093,8 @@ def backup_excel_to_trash(xlsx_path: Path, progress=None, total_stages: int = 5)
                 total=1,
                 file_name=backup_path.name,
             )
+    except FileAccessError:
+        raise
     except Exception as e:
         if progress:
             raise RuntimeError(f"Не вдалося зробити backup Excel у кошик:\n{backup_path}\n\n{e}") from e
@@ -1819,14 +1916,14 @@ def main():
                 error_parent.lift()
                 error_parent.attributes("-topmost", True)
                 error_parent.update()
-                messagebox.showerror("Помилка", str(exc), parent=error_parent)
+                messagebox.showerror(getattr(exc, "title", "Помилка"), str(exc), parent=error_parent)
             else:
                 root = Tk()
                 root.withdraw()
                 install_frozen_executable_icon(root)
                 install_dark_title_bar(root)
                 root.attributes("-topmost", True)
-                messagebox.showerror("Помилка", str(exc), parent=root)
+                messagebox.showerror(getattr(exc, "title", "Помилка"), str(exc), parent=root)
                 root.destroy()
         except Exception:
             print(f"Помилка: {exc}")
