@@ -1154,14 +1154,8 @@ def detect_money_data_start_row(ws) -> int:
     return MONEY_DEFAULT_DATA_START_ROW
 
 
-def clear_money_column_and_set_format(ws, start_row: int) -> int:
+def clear_money_column_values(ws, start_row: int) -> int:
     cleared = 0
-    col_letter = get_column_letter(MONEY_COL_IDX)
-
-    try:
-        ws.column_dimensions[col_letter].number_format = ACCOUNTING_UAH_FORMAT
-    except Exception:
-        pass
 
     for row in range(start_row, max(ws.max_row, start_row) + 1):
         cell = ws.cell(row=row, column=MONEY_COL_IDX)
@@ -1170,7 +1164,6 @@ def clear_money_column_and_set_format(ws, start_row: int) -> int:
         if cell.value not in (None, ""):
             cleared += 1
         cell.value = None
-        cell.number_format = ACCOUNTING_UAH_FORMAT
 
     return cleared
 
@@ -1194,7 +1187,7 @@ def calculate_row_salary(ws, row: int, start_col_idx: int, last_day: int) -> tup
 
 def process_money_sheet(ws, start_col_idx: int, last_day: int, progress=None, sheet_no: int = 1, total_sheets: int = 1) -> dict[str, object]:
     data_start_row = detect_money_data_start_row(ws)
-    cleared_values = clear_money_column_and_set_format(ws, start_row=data_start_row)
+    cleared_values = clear_money_column_values(ws, start_row=data_start_row)
     last_row = find_money_last_text_row(ws, MONEY_PIB_COL_IDX, data_start_row)
 
     stats: dict[str, object] = {
