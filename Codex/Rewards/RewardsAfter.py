@@ -1,16 +1,18 @@
 from openpyxl.utils import column_index_from_string, get_column_letter
 from tkinter import Tk, filedialog, messagebox, BooleanVar, StringVar, ttk
-from openpyxl.styles import Alignment, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 from collections import defaultdict, deque
 from openpyxl.cell.cell import MergedCell
 from datetime import datetime, date
 from openpyxl import load_workbook
 from send2trash import send2trash
+from zipfile import BadZipFile, ZipFile
 import tkinter.font as tkfont
 from pathlib import Path
 import tkinter as tk
 import threading
 import queue
+import os
 import sys
 
 
@@ -161,6 +163,44 @@ def run_end():
         return
     dt = time.perf_counter() - _RUN_T0
     log(f"=== END RewardsAfter === total={dt:.2f}s ({dt/60:.2f} min)")
+
+
+def _assert_valid_xlsx_package(path: Path) -> None:
+    try:
+        with ZipFile(path) as zf:
+            bad_member = zf.testzip()
+    except BadZipFile as exc:
+        raise ValueError(f"Збережений Excel-файл має пошкоджений ZIP-контейнер: {path}") from exc
+
+    if bad_member:
+        raise ValueError(f"Збережений Excel-файл має пошкоджену частину ZIP: {bad_member}")
+
+
+def _safe_save_workbook(wb, target_xlsx: Path) -> None:
+    target_xlsx = Path(target_xlsx)
+    tmp_path = target_xlsx.with_name(f".{target_xlsx.stem}.{os.getpid()}.tmp{target_xlsx.suffix}")
+
+    try:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            raise
+
+        wb.save(tmp_path)
+        _assert_valid_xlsx_package(tmp_path)
+        tmp_path.replace(target_xlsx)
+    except Exception:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
+        raise
+
+
+def save_target_workbook(wb, target_xlsx: Path) -> None:
+    _safe_save_workbook(wb, target_xlsx)
 
 # ===================== GUI (ONE WINDOW) =====================
 
@@ -872,7 +912,7 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int, bool]:
 
     money_row = ttk.Frame(container, style="LaunchPanel.TFrame")
     money_row.grid(row=3, column=0, columnspan=3, sticky="w", padx=8)
-    ttk.Label(money_row, text="Перерахунок грошей у AN", style="LaunchField.TLabel").grid(
+    ttk.Label(money_row, text="Перерахунок грошей у AO", style="LaunchField.TLabel").grid(
         row=0, column=0, sticky="w"
     )
     ToggleSwitch(money_row, money_mode_var).grid(row=0, column=1, padx=(10, 0), sticky="w")
@@ -880,7 +920,8 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int, bool]:
     ttk.Label(
         container,
         text=(
-            "Коли вимкнено, виконується кінцева операція заповнення листів 100 / 70 / 30 / 0"
+            "Коли увімкнено, виконується перерахунок грошей у колонці AO на аркушах 100 000 та, якщо є, упр.\n"
+            "Коли вимкнено, виконується кінцева операція заповнення листів 100 / 70 / 30 / 0."
         ),
         style="LaunchMuted.TLabel",
         wraplength=520,
@@ -1056,7 +1097,7 @@ MONEY_REQUIRED_SHEET = "100 000"
 MONEY_OPTIONAL_SHEET = "упр"
 MONEY_TARGET_SHEETS = (MONEY_REQUIRED_SHEET, MONEY_OPTIONAL_SHEET)
 MONEY_PIB_COL_IDX = column_index_from_string("E")
-MONEY_COL_LETTER = "AN"
+MONEY_COL_LETTER = "AO"
 MONEY_COL_IDX = column_index_from_string(MONEY_COL_LETTER)
 MONEY_HEADER_ROWS_TO_SKIP = 5
 MONEY_DEFAULT_DATA_START_ROW = MONEY_HEADER_ROWS_TO_SKIP + 1
@@ -1064,6 +1105,7 @@ OLIVE_MONTHLY_RATE = 30000.0
 GREEN_MONTHLY_RATE = 100000.0
 ACCOUNTING_UAH_FORMAT = '_-* #,##0.00\\ "грн"_-;-* #,##0.00\\ "грн"_-;_-* "-"??\\ "грн"_-;_-@_-'
 MONEY_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=False)
+MONEY_FONT = Font(name="Times New Roman", size=12)
 
 
 def _is_money_olive_fill(cell) -> bool:
@@ -1112,7 +1154,7 @@ def detect_money_data_start_row(ws) -> int:
     return MONEY_DEFAULT_DATA_START_ROW
 
 
-def clear_money_column_and_set_format(ws) -> int:
+def clear_money_column_and_set_format(ws, start_row: int) -> int:
     cleared = 0
     col_letter = get_column_letter(MONEY_COL_IDX)
 
@@ -1121,7 +1163,7 @@ def clear_money_column_and_set_format(ws) -> int:
     except Exception:
         pass
 
-    for row in range(1, max(ws.max_row, 1) + 1):
+    for row in range(start_row, max(ws.max_row, start_row) + 1):
         cell = ws.cell(row=row, column=MONEY_COL_IDX)
         if isinstance(cell, MergedCell):
             continue
@@ -1151,8 +1193,8 @@ def calculate_row_salary(ws, row: int, start_col_idx: int, last_day: int) -> tup
 
 
 def process_money_sheet(ws, start_col_idx: int, last_day: int, progress=None, sheet_no: int = 1, total_sheets: int = 1) -> dict[str, object]:
-    cleared_values = clear_money_column_and_set_format(ws)
     data_start_row = detect_money_data_start_row(ws)
+    cleared_values = clear_money_column_and_set_format(ws, start_row=data_start_row)
     last_row = find_money_last_text_row(ws, MONEY_PIB_COL_IDX, data_start_row)
 
     stats: dict[str, object] = {
@@ -1186,6 +1228,10 @@ def process_money_sheet(ws, start_col_idx: int, last_day: int, progress=None, sh
             continue
 
         amount, olive_days, green_days = calculate_row_salary(ws, row, start_col_idx, last_day)
+        stats["processed_rows"] = int(stats["processed_rows"]) + 1
+        if amount == 0:
+            continue
+
         target_cell = ws.cell(row=row, column=MONEY_COL_IDX)
         if isinstance(target_cell, MergedCell):
             raise ValueError(f"Клітинка {ws.title}!{target_cell.coordinate} об'єднана, не можу записати суму.")
@@ -1193,8 +1239,8 @@ def process_money_sheet(ws, start_col_idx: int, last_day: int, progress=None, sh
         target_cell.value = amount
         target_cell.number_format = ACCOUNTING_UAH_FORMAT
         target_cell.alignment = MONEY_ALIGNMENT
+        target_cell.font = MONEY_FONT
 
-        stats["processed_rows"] = int(stats["processed_rows"]) + 1
         stats["written_rows"] = int(stats["written_rows"]) + 1
         stats["olive_days"] = int(stats["olive_days"]) + olive_days
         stats["green_days"] = int(stats["green_days"]) + green_days
@@ -1251,7 +1297,7 @@ def run_rewards_money(target_xlsx: Path, start_col_idx: int, year: int, month: i
                 file_name=target_xlsx.name,
             )
 
-        wb.save(target_xlsx)
+        save_target_workbook(wb, target_xlsx)
 
         if progress:
             progress.update(
@@ -1277,7 +1323,7 @@ def format_money_success_message(stats: dict[str, dict[str, object]]) -> str:
         amount = float(sheet_stats.get("total_amount", 0.0))
         parts.append(f"{sheet_name}: {written} ряд., {amount:,.2f} грн")
 
-    return "RewardsAfter: колонку AN заповнено.\n" + "\n".join(parts)
+    return "RewardsAfter: колонку AO заповнено.\n" + "\n".join(parts)
 
 def reason_from_rgb(rgb_u: str) -> str:
     if not rgb_u:
@@ -1705,7 +1751,7 @@ def run_rewards_after(target_xlsx: Path, start_col_idx: int, year: int, month: i
             total=3,
             file_name=target_xlsx.name,
         )
-    wb.save(target_xlsx)
+    save_target_workbook(wb, target_xlsx)
     wb.close()
 
     last_rows = {
@@ -1765,7 +1811,7 @@ def main():
         progress = ProgressWindow(
             ui_root,
             subtitle=(
-                "Перерахунок зарплат у колонці AN виконується..."
+                "Перерахунок зарплат у колонці AO виконується..."
                 if money_mode
                 else "Заповнення листів 100 / 70 / 30 / 0 виконується..."
             ),
@@ -1780,7 +1826,7 @@ def main():
             )
             for sheet_name, sheet_stats in stats.items():
                 log(f"[MONEY] {sheet_name}: {sheet_stats}")
-            success_detail = "RewardsAfter: колонку AN заповнено."
+            success_detail = "RewardsAfter: колонку AO заповнено."
             success_message = format_money_success_message(stats)
         else:
             run_rewards_after_with_progress(
