@@ -300,12 +300,6 @@ def configure_launch_styles(root):
         style.configure("LaunchSection.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 12, "bold"))
         style.configure("LaunchField.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 10, "bold"))
         style.configure("LaunchMuted.TLabel", background=colors["panel"], foreground=colors["muted"], font=("Segoe UI", 9))
-        style.configure("Launch.TCheckbutton", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 10, "bold"))
-        style.map(
-            "Launch.TCheckbutton",
-            background=[("active", colors["panel"])],
-            foreground=[("active", colors["text"])],
-        )
         style.configure("ProgressHeader.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 12, "bold"))
         style.configure("ProgressBody.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 10))
         style.configure("ProgressFile.TLabel", background=colors["panel"], foreground=colors["muted"], font=("Segoe UI", 9))
@@ -607,6 +601,87 @@ class ProgressDisplayGate:
         return True
 
 
+class ToggleSwitch(ttk.Frame):
+    def __init__(self, owner, variable):
+        super().__init__(owner)
+        self.variable = variable
+        self.state_var = tk.StringVar()
+
+        style = ttk.Style(self)
+        try:
+            parent_style = owner.cget("style")
+            if parent_style:
+                self.configure(style=parent_style)
+                canvas_bg = style.lookup(parent_style, "background")
+            else:
+                canvas_bg = ""
+        except Exception:
+            canvas_bg = ""
+        canvas_bg = canvas_bg or style.lookup("LaunchPanel.TFrame", "background") or self.winfo_toplevel().cget("bg")
+        state_label_style = "ToggleState.TLabel"
+        try:
+            style.configure(
+                state_label_style,
+                background="#F4F4F8",
+                foreground="#15202B",
+                font=("Segoe UI", 9),
+            )
+        except Exception:
+            state_label_style = ""
+
+        self.canvas = tk.Canvas(
+            self,
+            width=52,
+            height=28,
+            bd=0,
+            highlightthickness=0,
+            bg=canvas_bg,
+            cursor="hand2",
+        )
+        self.canvas.grid(row=0, column=0, padx=(0, 8), sticky="w")
+
+        self.state_label = ttk.Label(self, textvariable=self.state_var, style=state_label_style)
+        self.state_label.grid(row=0, column=1, sticky="w")
+
+        for widget in (self, self.canvas, self.state_label):
+            widget.bind("<Button-1>", self.toggle)
+
+        self.variable.trace_add("write", self._redraw)
+        self._redraw()
+
+    def toggle(self, _event=None) -> None:
+        self.variable.set(not self.variable.get())
+
+    def _redraw(self, *_args) -> None:
+        is_enabled = bool(self.variable.get())
+        track_color = "#0F766E" if is_enabled else "#CBD5E1"
+        knob_color = "#FFFFFF"
+        self.state_var.set("Увімкнено" if is_enabled else "Вимкнено")
+
+        self.canvas.delete("all")
+
+        left = 2
+        top = 2
+        right = 50
+        bottom = 26
+        radius = (bottom - top) // 2
+
+        self.canvas.create_oval(left, top, left + 2 * radius, bottom, fill=track_color, outline=track_color)
+        self.canvas.create_oval(right - 2 * radius, top, right, bottom, fill=track_color, outline=track_color)
+        self.canvas.create_rectangle(left + radius, top, right - radius, bottom, fill=track_color, outline=track_color)
+
+        knob_diameter = (2 * radius) - 2
+        knob_left = right - knob_diameter - 1 if is_enabled else left + 1
+        self.canvas.create_oval(
+            knob_left,
+            top + 1,
+            knob_left + knob_diameter,
+            bottom - 1,
+            fill=knob_color,
+            outline=knob_color,
+        )
+
+
 def run_rewards_after_with_progress(
     target_xlsx: Path,
     start_col_idx: int,
@@ -793,17 +868,27 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int, bool]:
     file_entry.bind("<Configure>", lambda _event: refresh_path_entry_display(file_var, file_display_var, file_entry))
 
     footer_line = tk.Frame(container, bg=colors["border"], height=1)
-    footer_line.grid(row=2, column=0, columnspan=3, sticky="we", padx=8, pady=(12, 10))
+    footer_line.grid(row=2, column=0, columnspan=3, sticky="we", padx=8, pady=(12, 12))
 
-    ttk.Checkbutton(
+    money_row = ttk.Frame(container, style="LaunchPanel.TFrame")
+    money_row.grid(row=3, column=0, columnspan=3, sticky="w", padx=8)
+    ttk.Label(money_row, text="Перерахунок грошей у AN", style="LaunchField.TLabel").grid(
+        row=0, column=0, sticky="w"
+    )
+    ToggleSwitch(money_row, money_mode_var).grid(row=0, column=1, padx=(10, 0), sticky="w")
+
+    ttk.Label(
         container,
-        text="ПЕРЕРАХУВАТИ ГРОШІ У AN",
-        variable=money_mode_var,
-        style="Launch.TCheckbutton",
-    ).grid(row=3, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 14))
+        text=(
+            "Коли вимкнено, виконується кінцева операція заповнення листів 100 / 70 / 30 / 0"
+        ),
+        style="LaunchMuted.TLabel",
+        wraplength=520,
+        justify="left",
+    ).grid(row=4, column=0, columnspan=3, padx=8, pady=(10, 14), sticky="w")
 
     footer_line2 = tk.Frame(container, bg=colors["border"], height=1)
-    footer_line2.grid(row=4, column=0, columnspan=3, sticky="we", padx=8, pady=(0, 14))
+    footer_line2.grid(row=5, column=0, columnspan=3, sticky="we", padx=8, pady=(0, 14))
 
     result = {"ok": False, "data": None}
 
@@ -831,7 +916,7 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int, bool]:
         command=validate_and_close,
         style="LaunchHero.TButton",
     ).grid(
-        row=5, column=0, columnspan=3, sticky="we", padx=8, pady=(0, 4)
+        row=6, column=0, columnspan=3, sticky="we", padx=8, pady=(0, 4)
     )
 
     root.update_idletasks()
