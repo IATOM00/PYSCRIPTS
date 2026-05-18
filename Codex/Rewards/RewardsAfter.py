@@ -1,7 +1,8 @@
 from openpyxl.utils import column_index_from_string, get_column_letter
-from tkinter import Tk, filedialog, messagebox, StringVar, ttk
+from tkinter import Tk, filedialog, messagebox, BooleanVar, StringVar, ttk
 from openpyxl.styles import Alignment, PatternFill
 from collections import defaultdict, deque
+from openpyxl.cell.cell import MergedCell
 from datetime import datetime, date
 from openpyxl import load_workbook
 from send2trash import send2trash
@@ -228,7 +229,7 @@ def refresh_path_entry_display(source_var: StringVar, display_var: StringVar, en
 DEFAULT_START_COL_LETTER = "F"
 DEFAULT_START_COL_IDX = column_index_from_string(DEFAULT_START_COL_LETTER)
 HEADER_PERIOD_RE = re.compile(r"\b(20\d{2})-(0[1-9]|1[0-2])\b")
-HEADER_PERIOD_SCAN_SHEETS = ("100 000", "70 000", "100", "70", "30", "0")
+HEADER_PERIOD_SCAN_SHEETS = ("100 000", "упр", "70 000", "100", "70", "30", "0")
 
 
 def _parse_header_year_month(value) -> tuple[int, int] | None:
@@ -299,6 +300,12 @@ def configure_launch_styles(root):
         style.configure("LaunchSection.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 12, "bold"))
         style.configure("LaunchField.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 10, "bold"))
         style.configure("LaunchMuted.TLabel", background=colors["panel"], foreground=colors["muted"], font=("Segoe UI", 9))
+        style.configure("Launch.TCheckbutton", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 10, "bold"))
+        style.map(
+            "Launch.TCheckbutton",
+            background=[("active", colors["panel"])],
+            foreground=[("active", colors["text"])],
+        )
         style.configure("ProgressHeader.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 12, "bold"))
         style.configure("ProgressBody.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 10))
         style.configure("ProgressFile.TLabel", background=colors["panel"], foreground=colors["muted"], font=("Segoe UI", 9))
@@ -388,7 +395,7 @@ def _widget_exists(widget) -> bool:
 
 
 class ProgressWindow:
-    def __init__(self, owner: Tk):
+    def __init__(self, owner: Tk, subtitle: str = "Заповнення листів 100 / 70 / 30 / 0 виконується..."):
         self.close_requested = False
         self.dialog = tk.Toplevel(owner)
         self.dialog.withdraw()
@@ -417,7 +424,7 @@ class ProgressWindow:
         ).grid(row=0, column=0, sticky="w")
         tk.Label(
             header,
-            text="Заповнення листів 100 / 70 / 30 / 0 виконується...",
+            text=subtitle,
             bg=colors["header"],
             fg="#D7FBF5",
             font=("Segoe UI", 9),
@@ -606,16 +613,16 @@ def run_rewards_after_with_progress(
     year: int,
     month: int,
     progress: ProgressWindow,
-) -> None:
+) -> dict[str, dict[str, object]] | None:
     updates: "queue.Queue[dict[str, object]]" = queue.Queue()
-    result = {"error": None}
+    result = {"error": None, "stats": None}
     progress_proxy = ProgressUpdateProxy(updates)
     display_gate = ProgressDisplayGate(progress)
 
     def worker() -> None:
         try:
             backup_excel_to_trash(target_xlsx, progress=progress_proxy)
-            run_rewards_after(
+            result["stats"] = run_rewards_after(
                 target_xlsx=target_xlsx,
                 start_col_idx=start_col_idx,
                 year=year,
@@ -646,8 +653,59 @@ def run_rewards_after_with_progress(
             raise RuntimeError(str(result["error"]))
         raise result["error"]
 
+    return result["stats"]
 
-def ask_all_inputs_after() -> tuple[Path, int, int, int]:
+
+def run_rewards_money_with_progress(
+    target_xlsx: Path,
+    start_col_idx: int,
+    year: int,
+    month: int,
+    progress: ProgressWindow,
+) -> dict[str, dict[str, object]]:
+    updates: "queue.Queue[dict[str, object]]" = queue.Queue()
+    result = {"error": None, "stats": None}
+    progress_proxy = ProgressUpdateProxy(updates)
+    display_gate = ProgressDisplayGate(progress)
+
+    def worker() -> None:
+        try:
+            backup_excel_to_trash(target_xlsx, progress=progress_proxy, total_stages=4)
+            result["stats"] = run_rewards_money(
+                target_xlsx=target_xlsx,
+                start_col_idx=start_col_idx,
+                year=year,
+                month=month,
+                progress=progress_proxy,
+            )
+        except BaseException as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    while thread.is_alive():
+        display_gate.drain_updates(updates)
+        display_gate.apply_ready()
+        progress.refresh()
+        time.sleep(PROGRESS_POLL_SECONDS)
+
+    thread.join()
+    display_gate.drain_updates(updates)
+    while display_gate.has_pending():
+        display_gate.apply_ready()
+        progress.refresh()
+        time.sleep(PROGRESS_POLL_SECONDS)
+
+    if result["error"] is not None:
+        if isinstance(result["error"], SystemExit):
+            raise RuntimeError(str(result["error"]))
+        raise result["error"]
+
+    return result["stats"] or {}
+
+
+def ask_all_inputs_after() -> tuple[Path, int, int, int, bool]:
     root = Tk()
     root.withdraw()
     install_frozen_executable_icon(root)
@@ -660,6 +718,7 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int]:
 
     file_var = StringVar(value="")
     file_display_var = StringVar(value="")
+    money_mode_var = BooleanVar(value=True)
     entry_width = 40
 
     def browse_file():
@@ -734,7 +793,17 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int]:
     file_entry.bind("<Configure>", lambda _event: refresh_path_entry_display(file_var, file_display_var, file_entry))
 
     footer_line = tk.Frame(container, bg=colors["border"], height=1)
-    footer_line.grid(row=2, column=0, columnspan=3, sticky="we", padx=8, pady=(12, 14))
+    footer_line.grid(row=2, column=0, columnspan=3, sticky="we", padx=8, pady=(12, 10))
+
+    ttk.Checkbutton(
+        container,
+        text="ПЕРЕРАХУВАТИ ГРОШІ У AN",
+        variable=money_mode_var,
+        style="Launch.TCheckbutton",
+    ).grid(row=3, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 14))
+
+    footer_line2 = tk.Frame(container, bg=colors["border"], height=1)
+    footer_line2.grid(row=4, column=0, columnspan=3, sticky="we", padx=8, pady=(0, 14))
 
     result = {"ok": False, "data": None}
 
@@ -749,7 +818,7 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int]:
 
             start_col_idx, year, month = detect_template_context(target)
 
-            result["data"] = (target, start_col_idx, year, month)
+            result["data"] = (target, start_col_idx, year, month, bool(money_mode_var.get()))
             result["ok"] = True
             root.destroy()
 
@@ -762,7 +831,7 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int]:
         command=validate_and_close,
         style="LaunchHero.TButton",
     ).grid(
-        row=3, column=0, columnspan=3, sticky="we", padx=8, pady=(0, 4)
+        row=5, column=0, columnspan=3, sticky="we", padx=8, pady=(0, 4)
     )
 
     root.update_idletasks()
@@ -779,7 +848,7 @@ def ask_all_inputs_after() -> tuple[Path, int, int, int]:
     return result["data"]
 
 
-def backup_excel_to_trash(xlsx_path: Path, progress=None):
+def backup_excel_to_trash(xlsx_path: Path, progress=None, total_stages: int = 5):
     timestamp = datetime.now().strftime("%Y.%m.%d %H.%M")
     backup_name = f"{xlsx_path.stem} - {timestamp}{xlsx_path.suffix}"
     backup_path = xlsx_path.with_name(backup_name)
@@ -787,7 +856,7 @@ def backup_excel_to_trash(xlsx_path: Path, progress=None):
     try:
         if progress:
             progress.update(
-                header="Етап 1/5: Резервна копія",
+                header=f"Етап 1/{total_stages}: Резервна копія",
                 detail="Створюю backup цільового Excel...",
                 current=0,
                 total=1,
@@ -797,7 +866,7 @@ def backup_excel_to_trash(xlsx_path: Path, progress=None):
         send2trash(str(backup_path))
         if progress:
             progress.update(
-                header="Етап 1/5: Резервна копія",
+                header=f"Етап 1/{total_stages}: Резервна копія",
                 detail="Backup створено та переміщено в кошик",
                 current=1,
                 total=1,
@@ -896,6 +965,234 @@ def _build_pib_row_queues(ws, start_row: int, last_row: int, pib_col_idx: int = 
 
 OLIVE_SUFFIX = "C4D79B"   # "FFC4D79B"
 GREEN_SUFFIX = "00B050"   # "FF00B050"
+GREEN_SUFFIXES = (GREEN_SUFFIX, "006100")
+
+MONEY_REQUIRED_SHEET = "100 000"
+MONEY_OPTIONAL_SHEET = "упр"
+MONEY_TARGET_SHEETS = (MONEY_REQUIRED_SHEET, MONEY_OPTIONAL_SHEET)
+MONEY_PIB_COL_IDX = column_index_from_string("E")
+MONEY_COL_LETTER = "AN"
+MONEY_COL_IDX = column_index_from_string(MONEY_COL_LETTER)
+MONEY_HEADER_ROWS_TO_SKIP = 5
+MONEY_DEFAULT_DATA_START_ROW = MONEY_HEADER_ROWS_TO_SKIP + 1
+OLIVE_MONTHLY_RATE = 30000.0
+GREEN_MONTHLY_RATE = 100000.0
+ACCOUNTING_UAH_FORMAT = '_-* #,##0.00\\ "грн"_-;-* #,##0.00\\ "грн"_-;_-* "-"??\\ "грн"_-;_-@_-'
+MONEY_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=False)
+
+
+def _is_money_olive_fill(cell) -> bool:
+    return _fill_rgb(cell).endswith(OLIVE_SUFFIX)
+
+
+def _is_money_green_fill(cell) -> bool:
+    rgb = _fill_rgb(cell)
+    return any(rgb.endswith(suffix) for suffix in GREEN_SUFFIXES)
+
+
+def _is_person_pib(value) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return text.casefold() != "піб"
+
+
+def find_money_last_text_row(ws, col_idx: int, start_row: int) -> int:
+    last = start_row - 1
+    for row in range(start_row, ws.max_row + 1):
+        value = ws.cell(row=row, column=col_idx).value
+        if value is not None and str(value).strip() != "":
+            last = row
+    return last
+
+
+def find_money_pib_header_row(ws) -> int | None:
+    for row in range(1, min(ws.max_row, 12) + 1):
+        value = ws.cell(row=row, column=MONEY_PIB_COL_IDX).value
+        if str(value or "").strip().casefold() == "піб":
+            return row
+    return None
+
+
+def detect_money_data_start_row(ws) -> int:
+    header_row = find_money_pib_header_row(ws)
+    if header_row is None:
+        return MONEY_DEFAULT_DATA_START_ROW
+
+    search_to = max(MONEY_DEFAULT_DATA_START_ROW, header_row + 1)
+    for row in range(header_row + 1, min(ws.max_row, search_to) + 1):
+        if _is_person_pib(ws.cell(row=row, column=MONEY_PIB_COL_IDX).value):
+            return row
+
+    return MONEY_DEFAULT_DATA_START_ROW
+
+
+def clear_money_column_and_set_format(ws) -> int:
+    cleared = 0
+    col_letter = get_column_letter(MONEY_COL_IDX)
+
+    try:
+        ws.column_dimensions[col_letter].number_format = ACCOUNTING_UAH_FORMAT
+    except Exception:
+        pass
+
+    for row in range(1, max(ws.max_row, 1) + 1):
+        cell = ws.cell(row=row, column=MONEY_COL_IDX)
+        if isinstance(cell, MergedCell):
+            continue
+        if cell.value not in (None, ""):
+            cleared += 1
+        cell.value = None
+        cell.number_format = ACCOUNTING_UAH_FORMAT
+
+    return cleared
+
+
+def calculate_row_salary(ws, row: int, start_col_idx: int, last_day: int) -> tuple[float, int, int]:
+    olive_days = 0
+    green_days = 0
+
+    for day in range(1, last_day + 1):
+        cell = ws.cell(row=row, column=_day_to_col(start_col_idx, day))
+        if _is_money_olive_fill(cell):
+            olive_days += 1
+        elif _is_money_green_fill(cell):
+            green_days += 1
+
+    olive_daily = OLIVE_MONTHLY_RATE / last_day
+    green_daily = GREEN_MONTHLY_RATE / last_day
+    amount = round((olive_days * olive_daily) + (green_days * green_daily), 2)
+    return amount, olive_days, green_days
+
+
+def process_money_sheet(ws, start_col_idx: int, last_day: int, progress=None, sheet_no: int = 1, total_sheets: int = 1) -> dict[str, object]:
+    cleared_values = clear_money_column_and_set_format(ws)
+    data_start_row = detect_money_data_start_row(ws)
+    last_row = find_money_last_text_row(ws, MONEY_PIB_COL_IDX, data_start_row)
+
+    stats: dict[str, object] = {
+        "sheet": ws.title,
+        "data_start_row": data_start_row,
+        "last_row": last_row,
+        "cleared_values": cleared_values,
+        "processed_rows": 0,
+        "written_rows": 0,
+        "olive_days": 0,
+        "green_days": 0,
+        "total_amount": 0.0,
+    }
+
+    if last_row < data_start_row:
+        return stats
+
+    total_rows = last_row - data_start_row + 1
+    for idx, row in enumerate(range(data_start_row, last_row + 1), start=1):
+        if progress and (idx == 1 or idx % 25 == 0 or idx == total_rows):
+            progress.update(
+                header=f"Етап 3/4: Аркуш {sheet_no}/{total_sheets}",
+                detail=f"Рахую зарплати на аркуші '{ws.title}'...",
+                current=idx,
+                total=total_rows,
+                file_name=f"Рядок {row}",
+            )
+
+        pib_value = ws.cell(row=row, column=MONEY_PIB_COL_IDX).value
+        if not _is_person_pib(pib_value):
+            continue
+
+        amount, olive_days, green_days = calculate_row_salary(ws, row, start_col_idx, last_day)
+        target_cell = ws.cell(row=row, column=MONEY_COL_IDX)
+        if isinstance(target_cell, MergedCell):
+            raise ValueError(f"Клітинка {ws.title}!{target_cell.coordinate} об'єднана, не можу записати суму.")
+
+        target_cell.value = amount
+        target_cell.number_format = ACCOUNTING_UAH_FORMAT
+        target_cell.alignment = MONEY_ALIGNMENT
+
+        stats["processed_rows"] = int(stats["processed_rows"]) + 1
+        stats["written_rows"] = int(stats["written_rows"]) + 1
+        stats["olive_days"] = int(stats["olive_days"]) + olive_days
+        stats["green_days"] = int(stats["green_days"]) + green_days
+        stats["total_amount"] = float(stats["total_amount"]) + amount
+
+    stats["total_amount"] = round(float(stats["total_amount"]), 2)
+    return stats
+
+
+def run_rewards_money(target_xlsx: Path, start_col_idx: int, year: int, month: int, progress=None) -> dict[str, dict[str, object]]:
+    last_day = calendar.monthrange(year, month)[1]
+
+    if progress:
+        progress.update(
+            header="Етап 2/4: Завантаження Excel",
+            detail="Відкриваю цільовий файл...",
+            current=0,
+            total=1,
+            file_name=target_xlsx.name,
+        )
+
+    wb = load_workbook(target_xlsx)
+    try:
+        if MONEY_REQUIRED_SHEET not in wb.sheetnames:
+            raise ValueError(f"Нема аркуша '{MONEY_REQUIRED_SHEET}' у файлі: {target_xlsx.name}")
+
+        sheet_names = [sheet_name for sheet_name in MONEY_TARGET_SHEETS if sheet_name in wb.sheetnames]
+        if progress:
+            progress.update(
+                header="Етап 2/4: Завантаження Excel",
+                detail=f"Період: {year}-{month:02d}, днів: {last_day}",
+                current=1,
+                total=1,
+                file_name=", ".join(sheet_names),
+            )
+
+        stats: dict[str, dict[str, object]] = {}
+        for sheet_no, sheet_name in enumerate(sheet_names, start=1):
+            stats[sheet_name] = process_money_sheet(
+                wb[sheet_name],
+                start_col_idx=start_col_idx,
+                last_day=last_day,
+                progress=progress,
+                sheet_no=sheet_no,
+                total_sheets=len(sheet_names),
+            )
+
+        if progress:
+            progress.update(
+                header="Етап 4/4: Збереження",
+                detail="Зберігаю Excel-файл...",
+                current=0,
+                total=1,
+                file_name=target_xlsx.name,
+            )
+
+        wb.save(target_xlsx)
+
+        if progress:
+            progress.update(
+                header="Етап 4/4: Збереження",
+                detail="Файл збережено",
+                current=1,
+                total=1,
+                file_name=target_xlsx.name,
+            )
+
+        return stats
+    finally:
+        wb.close()
+
+
+def format_money_success_message(stats: dict[str, dict[str, object]]) -> str:
+    if not stats:
+        return "RewardsAfter: перерахунок грошей завершено."
+
+    parts = []
+    for sheet_name, sheet_stats in stats.items():
+        written = int(sheet_stats.get("written_rows", 0))
+        amount = float(sheet_stats.get("total_amount", 0.0))
+        parts.append(f"{sheet_name}: {written} ряд., {amount:,.2f} грн")
+
+    return "RewardsAfter: колонку AN заповнено.\n" + "\n".join(parts)
 
 def reason_from_rgb(rgb_u: str) -> str:
     if not rgb_u:
@@ -1369,10 +1666,10 @@ def main():
     try:
         run_start()
 
-        target_xlsx, start_col_idx, year, month = ask_all_inputs_after()
+        target_xlsx, start_col_idx, year, month, money_mode = ask_all_inputs_after()
 
         log(f"[INPUT] TARGET file : {target_xlsx}")
-        log(f"[PARAMS] year={year}, month={month}, start_col_idx={start_col_idx}")
+        log(f"[PARAMS] year={year}, month={month}, start_col_idx={start_col_idx}, money_mode={money_mode}")
 
         ui_root = Tk()
         ui_root.withdraw()
@@ -1380,25 +1677,47 @@ def main():
         install_dark_title_bar(ui_root)
         ui_root.attributes("-topmost", True)
 
-        progress = ProgressWindow(ui_root)
-        run_rewards_after_with_progress(
-            target_xlsx=target_xlsx,
-            start_col_idx=start_col_idx,
-            year=year,
-            month=month,
-            progress=progress,
+        progress = ProgressWindow(
+            ui_root,
+            subtitle=(
+                "Перерахунок зарплат у колонці AN виконується..."
+                if money_mode
+                else "Заповнення листів 100 / 70 / 30 / 0 виконується..."
+            ),
         )
+        if money_mode:
+            stats = run_rewards_money_with_progress(
+                target_xlsx=target_xlsx,
+                start_col_idx=start_col_idx,
+                year=year,
+                month=month,
+                progress=progress,
+            )
+            for sheet_name, sheet_stats in stats.items():
+                log(f"[MONEY] {sheet_name}: {sheet_stats}")
+            success_detail = "RewardsAfter: колонку AN заповнено."
+            success_message = format_money_success_message(stats)
+        else:
+            run_rewards_after_with_progress(
+                target_xlsx=target_xlsx,
+                start_col_idx=start_col_idx,
+                year=year,
+                month=month,
+                progress=progress,
+            )
+            success_detail = "RewardsAfter: листи 100 / 70 / 30 / 0 заповнені."
+            success_message = "RewardsAfter: листи 100/70/30/0 заповнені."
 
         run_end()
         progress.show_success_then_close(
-            "RewardsAfter: листи 100 / 70 / 30 / 0 заповнені.",
+            success_detail,
             file_name=target_xlsx.name,
         )
         progress = None
 
         if ui_root is not None and _widget_exists(ui_root):
             ui_root.attributes("-topmost", True)
-            messagebox.showinfo("Готово!", "RewardsAfter: листи 100/70/30/0 заповнені.", parent=ui_root)
+            messagebox.showinfo("Готово!", success_message, parent=ui_root)
     except SystemExit as exc:
         if str(exc):
             log(str(exc))
