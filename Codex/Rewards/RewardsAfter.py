@@ -1,12 +1,12 @@
-from openpyxl.utils import column_index_from_string, get_column_letter
 from tkinter import Tk, filedialog, messagebox, BooleanVar, StringVar, ttk
+from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl import load_workbook as _openpyxl_load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from collections import defaultdict, deque
 from openpyxl.cell.cell import MergedCell
-from datetime import datetime, date
-from openpyxl import load_workbook as _openpyxl_load_workbook
-from send2trash import send2trash
 from zipfile import BadZipFile, ZipFile
+from datetime import datetime, date
+from send2trash import send2trash
 import tkinter.font as tkfont
 from pathlib import Path
 import tkinter as tk
@@ -19,9 +19,7 @@ import sys
 class FileAccessError(Exception):
     title = "Файл зайнятий"
 
-
 _FILE_ACCESS_WINERRORS = {5, 32, 33}
-
 
 def _is_file_access_error(exc: BaseException) -> bool:
     if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in _FILE_ACCESS_WINERRORS:
