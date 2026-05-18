@@ -1030,6 +1030,11 @@ OUTPUT_CENTER_WRAP_ALIGNMENT = Alignment(
     vertical="center",
     wrap_text=True,
 )
+OUTPUT_DEFAULT_COLUMN_WIDTH = 8.43
+OUTPUT_MIN_ROW_HEIGHT = 15.0
+OUTPUT_ROW_HEIGHT_PER_LINE = 15.0
+OUTPUT_ROW_HEIGHT_PADDING = 2.0
+OUTPUT_MAX_ROW_HEIGHT = 180.0
 
 def _fill_rgb(cell) -> str:
     try:
@@ -1154,16 +1159,19 @@ def detect_money_data_start_row(ws) -> int:
     return MONEY_DEFAULT_DATA_START_ROW
 
 
-def clear_money_column_values(ws, start_row: int) -> int:
+def clear_money_column_text_only(ws, start_row: int) -> int:
     cleared = 0
 
     for row in range(start_row, max(ws.max_row, start_row) + 1):
-        cell = ws.cell(row=row, column=MONEY_COL_IDX)
+        # Do not use ws.cell()/iter_rows here: they create blank cells and can disturb template formatting on save.
+        cell = ws._cells.get((row, MONEY_COL_IDX))
+        if cell is None:
+            continue
         if isinstance(cell, MergedCell):
             continue
         if cell.value not in (None, ""):
             cleared += 1
-        cell.value = None
+            cell.value = None
 
     return cleared
 
@@ -1187,7 +1195,7 @@ def calculate_row_salary(ws, row: int, start_col_idx: int, last_day: int) -> tup
 
 def process_money_sheet(ws, start_col_idx: int, last_day: int, progress=None, sheet_no: int = 1, total_sheets: int = 1) -> dict[str, object]:
     data_start_row = detect_money_data_start_row(ws)
-    cleared_values = clear_money_column_values(ws, start_row=data_start_row)
+    cleared_values = clear_money_column_text_only(ws, start_row=data_start_row)
     last_row = find_money_last_text_row(ws, MONEY_PIB_COL_IDX, data_start_row)
 
     stats: dict[str, object] = {
@@ -1374,12 +1382,47 @@ def clear_output_sheets(wb, sheets: list[str], start_row: int = 7):
                 cell.value = None
                 cell.fill = NO_FILL
 
-def apply_output_sheet_formatting(ws, start_row: int, end_row: int, columns: tuple[int, ...]) -> tuple[int, int]:
+def _column_width_chars(ws, col_idx: int) -> int:
+    col_letter = get_column_letter(col_idx)
+    width = ws.column_dimensions[col_letter].width
+    try:
+        width = float(width) if width is not None else OUTPUT_DEFAULT_COLUMN_WIDTH
+    except (TypeError, ValueError):
+        width = OUTPUT_DEFAULT_COLUMN_WIDTH
+    return max(1, int(width) - 1)
+
+
+def _wrapped_line_count(text: str, chars_per_line: int) -> int:
+    lines = 0
+    for part in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not part:
+            lines += 1
+        else:
+            lines += (len(part) + chars_per_line - 1) // chars_per_line
+    return max(1, lines)
+
+
+def estimate_output_row_height(ws, row: int, columns: tuple[int, ...]) -> float:
+    max_lines = 1
+    for c in columns:
+        cell = ws.cell(row=row, column=c)
+        if cell.value in (None, ""):
+            continue
+        max_lines = max(max_lines, _wrapped_line_count(str(cell.value), _column_width_chars(ws, c)))
+
+    height = max(OUTPUT_MIN_ROW_HEIGHT, max_lines * OUTPUT_ROW_HEIGHT_PER_LINE)
+    if max_lines > 1:
+        height += OUTPUT_ROW_HEIGHT_PADDING
+    return min(height, OUTPUT_MAX_ROW_HEIGHT)
+
+
+def apply_output_sheet_formatting(ws, start_row: int, end_row: int, columns: tuple[int, ...]) -> tuple[int, int, int]:
     if end_row < start_row:
-        return 0, 0
+        return 0, 0, 0
 
     rows_formatted = 0
     cells_formatted = 0
+    row_heights_set = 0
     for r in range(start_row, end_row + 1):
         row_has_value = False
         for c in columns:
@@ -1390,10 +1433,11 @@ def apply_output_sheet_formatting(ws, start_row: int, end_row: int, columns: tup
             cells_formatted += 1
 
         if row_has_value:
-            ws.row_dimensions[r].height = None
+            ws.row_dimensions[r].height = estimate_output_row_height(ws, r, columns)
             rows_formatted += 1
+            row_heights_set += 1
 
-    return rows_formatted, cells_formatted
+    return rows_formatted, cells_formatted, row_heights_set
 
 def format_output_sheets_after_write(wb, last_rows: dict[str, int], start_row: int = OUTPUT_START_ROW) -> dict[str, dict[str, int]]:
     stats: dict[str, dict[str, int]] = {}
@@ -1403,7 +1447,7 @@ def format_output_sheets_after_write(wb, last_rows: dict[str, int], start_row: i
             continue
 
         last_row = last_rows.get(sheet_name, start_row - 1)
-        rows_formatted, cells_formatted = apply_output_sheet_formatting(
+        rows_formatted, cells_formatted, row_heights_set = apply_output_sheet_formatting(
             ws=wb[sheet_name],
             start_row=start_row,
             end_row=last_row,
@@ -1413,73 +1457,10 @@ def format_output_sheets_after_write(wb, last_rows: dict[str, int], start_row: i
             "last_row": last_row,
             "rows": rows_formatted,
             "cells": cells_formatted,
+            "row_heights": row_heights_set,
         }
 
     return stats
-
-def autofit_output_sheets_via_excel_com(target_xlsx: Path, last_rows: dict[str, int], start_row: int = OUTPUT_START_ROW) -> bool:
-    try:
-        import win32com.client as win32
-        import pythoncom
-    except Exception as e:
-        log(f"[AFTER/FORMAT] Excel COM недоступний, AutoFit скіпнуто: {e}")
-        return False
-
-    xl_center = -4108
-    pythoncom.CoInitialize()
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    excel.AskToUpdateLinks = False
-    try:
-        excel.AutomationSecurity = 3
-    except Exception:
-        pass
-    try:
-        excel.EnableEvents = False
-    except Exception:
-        pass
-
-    wb = None
-    saved = False
-    try:
-        wb = excel.Workbooks.Open(str(target_xlsx), UpdateLinks=0, ReadOnly=False)
-
-        for sheet_name, columns in OUTPUT_SHEET_COLUMNS.items():
-            last_row = last_rows.get(sheet_name, start_row - 1)
-            if last_row < start_row:
-                continue
-
-            ws = wb.Worksheets(sheet_name)
-            for col_idx in columns:
-                col_letter = get_column_letter(col_idx)
-                cell_range = ws.Range(f"{col_letter}{start_row}:{col_letter}{last_row}")
-                cell_range.HorizontalAlignment = xl_center
-                cell_range.VerticalAlignment = xl_center
-                cell_range.WrapText = True
-
-            ws.Rows(f"{start_row}:{last_row}").AutoFit()
-
-        wb.Save()
-        saved = True
-        return True
-    except Exception as e:
-        log(f"[AFTER/FORMAT] Excel COM formatting warning: {e}")
-        return False
-    finally:
-        if wb is not None:
-            try:
-                wb.Close(SaveChanges=saved)
-            except Exception:
-                pass
-        try:
-            excel.Quit()
-        except Exception:
-            pass
-        try:
-            pythoncom.CoUninitialize()
-        except Exception:
-            pass
 
 # ===================== CORE =====================
 
@@ -1722,7 +1703,7 @@ def run_rewards_after(target_xlsx: Path, start_col_idx: int, year: int, month: i
             header="Етап 5/5: Збереження",
             detail="Форматую заповнені листи...",
             current=0,
-            total=3,
+            total=2,
             file_name=target_xlsx.name,
         )
     format_stats = format_output_sheets_after_write(
@@ -1741,37 +1722,18 @@ def run_rewards_after(target_xlsx: Path, start_col_idx: int, year: int, month: i
             header="Етап 5/5: Збереження",
             detail="Зберігаю Excel-файл...",
             current=1,
-            total=3,
+            total=2,
             file_name=target_xlsx.name,
         )
     save_target_workbook(wb, target_xlsx)
     wb.close()
 
-    last_rows = {
-        "100": out100_r - 1,
-        "70": out70_r - 1,
-        "30": out30_r - 1,
-        "0": out0_r - 1,
-    }
-    if progress:
-        progress.update(
-            header="Етап 5/5: Збереження",
-            detail="Синхронізовуємо рядки через Excel...",
-            current=2,
-            total=3,
-            file_name=target_xlsx.name,
-        )
-    com_autofit_applied = autofit_output_sheets_via_excel_com(
-        target_xlsx=target_xlsx,
-        last_rows=last_rows,
-        start_row=OUTPUT_START_ROW,
-    )
     if progress:
         progress.update(
             header="Етап 5/5: Збереження",
             detail="Завершено!",
-            current=3,
-            total=3,
+            current=2,
+            total=2,
             file_name=target_xlsx.name,
         )
 
@@ -1780,7 +1742,7 @@ def run_rewards_after(target_xlsx: Path, start_col_idx: int, year: int, month: i
     log(f"[AFTER] excluded_from_100_70_30={excluded_people}")
     log(f"[AFTER] rows_written: 100={wrote_100}, 70={wrote_70}, 30={wrote_30}, 0={wrote_0}")
     log(f"[AFTER] formatting_stats={format_stats}")
-    log(f"[AFTER] row_autofit_via_excel_com={com_autofit_applied}")
+    log("[AFTER] row_autofit_via_openpyxl=True")
 
 # ===================== MAIN =====================
 
