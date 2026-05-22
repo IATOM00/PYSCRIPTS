@@ -5,7 +5,7 @@
 
 1.0. Середовище виконання: Windows, // + рекомендовано, з встановленим Microsoft Office — для тих скриптів що працюють із документами.
 2.1. Для виконовчих файлів, з розширенням EXE — PY-залежності не потрібні, оскільки усі необхідні ресурси {автономний движок} — уже все всередині.
-2.2. Для виконовчих файлів, з розширенням PY — для запуску необхідно: Python (версії 3.11, чи вище (https://www.python.org/downloads/release/python-3110)), та усі необхідні залежності перераховані в коді (зазначені в коді, після: 'import'); // ЗАГАЛЬНІ: "pip install pywin32 pandas numpy matplotlib openpyxl send2trash xlsxwriter python-docx pdfplumber pypdf"
+2.2. Для виконовчих файлів, з розширенням PY — для запуску необхідно: Python (версії 3.11, чи вище, та усі необхідні залежності перераховані в коді (зазначені в коді, після: 'import'); // ЗАГАЛЬНІ: "pip install pywin32 pandas numpy matplotlib openpyxl send2trash xlsxwriter python-docx pdfplumber pypdf"
 
 ——————————————————————————————————————————————————————
 
