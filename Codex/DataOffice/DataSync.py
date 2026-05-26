@@ -155,6 +155,8 @@ MATCH_SCORE_THRESHOLD = 0.88
 COPY_BUFFER_SIZE = 4 * 1024 * 1024
 COPY_UI_PUMP_INTERVAL = 0.05
 
+WEB_OBJECT_SUFFIXES = (".web", ".url", ".website")
+
 SKIPPED_AUTODETECT_DIRS = {
     "$recycle.bin",
     "system volume information",
@@ -229,6 +231,8 @@ class SyncStats:
     skipped_files: int = 0
     skipped_dirs: int = 0
     staged_paths: int = 0
+    copied_bytes: int = 0
+    staged_bytes: int = 0
     trash_destination: str = ""
     log_file_name: str = ""
     errors: List[str] = field(default_factory=list)
@@ -239,6 +243,10 @@ class SyncStats:
     @property
     def changed_count(self) -> int:
         return self.created_dirs + self.copied_files + self.updated_files + self.deleted_paths
+
+    @property
+    def transferred_bytes(self) -> int:
+        return self.copied_bytes + self.staged_bytes
 
 
 class TrashStager:
@@ -254,6 +262,7 @@ class TrashStager:
         self.log_path: Optional[Path] = None
         self.log_file_name: str = ""
         self.staged_count = 0
+        self.staged_bytes = 0
         self.trash_destination = ""
 
     def trash_path(
@@ -291,6 +300,7 @@ class TrashStager:
         except Exception:
             remove_path_if_exists(destination)
             raise
+        self.staged_bytes += calculate_path_size(destination)
         self.staged_count += 1
         logging.info("Підготовлено USB backup до кошика: %s -> %s", path, destination)
         return True
@@ -804,6 +814,10 @@ def is_skipped_sync_dir_name(name: str) -> bool:
     return name.startswith(".") or name.casefold() in SKIPPED_SYNC_DIRS
 
 
+def is_web_object_path(path: Path) -> bool:
+    return any(str(part).casefold().endswith(WEB_OBJECT_SUFFIXES) for part in path.parts)
+
+
 def has_skipped_sync_parent_dir(rel: Path) -> bool:
     return any(is_skipped_sync_dir_name(part) for part in rel.parts[:-1])
 
@@ -838,7 +852,8 @@ def record_skipped_sync_error(action: SyncAction, stats: SyncStats, exc: BaseExc
         stats.skipped_files += 1
 
     message = f"{action.rel}: {exc}"
-    stats.skipped_log.append(message)
+    if not is_web_object_path(action.rel):
+        stats.skipped_log.append(message)
     logging.warning("Пропущено недоступний службовий/некоректний об'єкт '%s': %s", action.rel, exc)
 
 
@@ -1659,6 +1674,33 @@ def remove_path(path: Path) -> None:
             path.unlink()
 
 
+def calculate_path_size(path: Path) -> int:
+    try:
+        if path.is_dir() and not path.is_symlink():
+            total = 0
+            stack = [path]
+            while stack:
+                current = stack.pop()
+                try:
+                    entries = list(os.scandir(current))
+                except OSError:
+                    continue
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+            return total
+        if path.is_file():
+            return path.stat().st_size
+    except OSError:
+        return 0
+    return 0
+
+
 def temporary_copy_path(destination: Path) -> Path:
     parent = destination.parent
     stem = destination.name
@@ -1834,6 +1876,7 @@ def execute_action(
             stats.updated_files += 1
         else:
             stats.copied_files += 1
+        stats.copied_bytes += calculate_path_size(action.dst_path)
         if action.conflict:
             stats.conflict_paths += 1
         return
@@ -1962,6 +2005,7 @@ def process_all(
         logging.info("%s", exc)
     finally:
         stats.staged_paths = trash.staged_count
+        stats.staged_bytes = trash.staged_bytes
         try:
             trash.write_log(
                 log_file_name,
@@ -1986,6 +2030,7 @@ def process_all(
             logging.exception("Не вдалося завершити відправлення у кошик: %s", exc)
 
         stats.staged_paths = trash.staged_count
+        stats.staged_bytes = trash.staged_bytes
         stats.trash_destination = trash.trash_destination
         stats.log_file_name = trash.log_file_name
 
@@ -3213,9 +3258,20 @@ def build_done_detail(stats: SyncStats) -> str:
     )
 
 
+def format_transfer_size(byte_count: int) -> str:
+    if byte_count >= 1024 ** 3:
+        return f"{byte_count / (1024 ** 3):.2f} ГБ"
+    return f"{byte_count / (1024 ** 2):.2f} МБ"
+
+
+def build_transfer_summary_line(stats: SyncStats) -> str:
+    return f"Обсяг синхронізованих даних: {format_transfer_size(stats.transferred_bytes)}."
+
+
 def build_result_text(stats: SyncStats) -> str:
     lines = [
         build_done_detail(stats),
+        build_transfer_summary_line(stats),
         f"Пропущено: файлів {stats.skipped_files}, папок {stats.skipped_dirs}.",
     ]
     if stats.staged_paths:
@@ -3255,6 +3311,7 @@ def build_summary_block_lines(stats: SyncStats) -> List[str]:
 def build_final_summary_text(stats: SyncStats) -> str:
     lines = [
         build_done_detail(stats),
+        build_transfer_summary_line(stats),
         "",
         *build_summary_block_lines(stats),
     ]
@@ -3419,6 +3476,7 @@ def build_run_log_text(
         APP_NAME,
         f'Дата та час запуску: {started_at}',
         f'Статус: {build_done_detail(stats)}',
+        build_transfer_summary_line(stats),
         f'SOURCE: "{source}"',
         f'TARGET: "{target}"',
         f'Режим: {MODE_LABELS.get(mode, mode)}',
