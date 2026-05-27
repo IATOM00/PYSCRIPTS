@@ -58,4 +58,4 @@ pip install pywin32 pandas numpy matplotlib openpyxl send2trash xlsxwriter pytho
 | Rewards    | Підготовка візуалізаційного звіту, стадія 2 | 'RewardsBefore.py' / 'RewardsBefore.exe'
 | Rewards    | Підготовка текстового звіту, стадія 3 | 'RewardsAfter.py' / 'RewardsAfter.exe'
 | Utilities  | Генерація пароля або ключа | 'BeatPass.py' / 'BeatPass.exe'
-| Utilities  | Аудит ПК | 'AuditHSW.py' / 'AuditHSW.exe'
+| Utilities  | Switch-layer keyboard | 'Mahou.py' / 'Mahou.exe'
